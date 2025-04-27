@@ -138,7 +138,7 @@ data StorageLocation (t :: Timing) where
 deriving instance Show (StorageLocation t)
 
 _Loc :: TItem a Storage t -> StorageLocation t
-_Loc item@(Item s _ _) = Loc s item
+_Loc item@(Item s _ _ _) = Loc s item
 
 instance Eq (StorageLocation t) where
   Loc SType i1 == Loc SType i2 = eqS' i1 i2
@@ -201,11 +201,11 @@ instance Eq (Ref k t) where
 -- that carries more precise type information (e.g., the exact
 -- contract type).
 data TItem (a :: ActType) (k :: RefKind) (t :: Timing) where
-  Item :: SType a -> ValueType -> Ref k t -> TItem a k t
+  Item :: SType a -> ValueType -> Time t -> Ref k t -> TItem a k t
 deriving instance Show (TItem a k t)
 deriving instance Eq (TItem a k t)
 
-_Item :: SingI a => ValueType -> Ref k t -> TItem a k t
+_Item :: SingI a => ValueType -> Time t -> Ref k t -> TItem a k t
 _Item = Item sing
 
 -- | Expressions for which the return type is known.
@@ -263,7 +263,7 @@ data Exp (a :: ActType) (t :: Timing) where
   Eq  :: Pn -> SType a -> Exp a t -> Exp a t -> Exp ABoolean t
   NEq :: Pn -> SType a -> Exp a t -> Exp a t -> Exp ABoolean t
   ITE :: Pn -> Exp ABoolean t -> Exp a t -> Exp a t -> Exp a t
-  TEntry :: Pn -> Time t -> SRefKind k -> TItem a k t -> Exp a t
+  TEntry :: Pn -> SRefKind k -> TItem a k t -> Exp a t
   -- Note: we could use a singleton types to avoid separating Entry and Var 
 deriving instance Show (Exp a t)
 
@@ -304,7 +304,7 @@ instance Eq (Exp a t) where
   NEq _ SType a b == NEq _ SType c d = eqS a c && eqS b d
 
   ITE _ a b c == ITE _ d e f = a == d && b == e && c == f
-  TEntry _ a SRefKind t == TEntry _ b SRefKind u = a == b && eqKind t u
+  TEntry _ SRefKind t == TEntry _ SRefKind u = eqKind t u
   Create _ a b == Create _ c d = a == c && b == d
 
   _ == _ = False
@@ -363,14 +363,14 @@ instance Timable (Exp a) where
     Eq  p s x y -> Eq p s (go x) (go y)
     NEq p s x y -> NEq p s (go x) (go y)
     ITE p x y z -> ITE p (go x) (go y) (go z)
-    TEntry p _ k item -> TEntry p time k (go item)
+    TEntry p k item -> TEntry p k (go item)
     where
       go :: Timable c => c Untimed -> c Timed
       go = setTime time
 
 
 instance Timable (TItem a k) where
-   setTime time (Item t vt ref) = Item t vt $ setTime time ref
+   setTime time (Item t vt _ ref) = Item t vt time (setTime time ref)
 
 instance Timable (Ref k) where
   setTime time (SMapping p e ts ixs) = SMapping p (setTime time e) ts (setTime time <$> ixs)
@@ -474,9 +474,10 @@ instance ToJSON (StorageUpdate t) where
   toJSON (Update _ a b) = object [ "location" .= toJSON a ,"value" .= toJSON b ]
 
 instance ToJSON (TItem a k t) where
-  toJSON (Item t _ a) = object [ "item" .= toJSON a
-                               , "type" .=  show t
-                               ]
+  toJSON (Item t _ time a) = object [ "item" .= toJSON a
+                                   , "type" .=  show t
+                                   , "timing" .= show time
+                                   ]
 
 instance ToJSON (Ref k t) where
   toJSON (SVar _ c x) = object [ "kind" .= pack "SVar"
@@ -556,8 +557,7 @@ instance ToJSON (Exp a t) where
                               , "type" .= pack "bytestring" ]
   toJSON (ByEnv _ a) = object [ "ethEnv" .= pack (show a)
                               , "type" .= pack "bytestring" ]
-  toJSON (TEntry _ t _ a) = object [ "entry"  .= toJSON a
-                                   , "timing" .= show t ]
+  toJSON (TEntry _ t _ a) = object [ "entry"  .= toJSON a ]
   toJSON (Create _ f xs) = object [ "symbol" .= pack "create"
                                   , "arity"  .= Data.Aeson.Types.Number 2
                                   , "args"   .= Array (fromList [object [ "fun" .=  String (pack f) ], toJSON xs]) ]
@@ -590,47 +590,6 @@ eval e = case e of
   Mul _ a b     -> [a' * b'     | a' <- eval a, b' <- eval b]
   Div _ a b     -> [a' `div` b' | a' <- eval a, b' <- eval b]
   Mod _ a b     -> [a' `mod` b' | a' <- eval a, b' <- eval b]
-  Exp _ a b     -> [a' ^ b'     | a' <- eval a, b' <- eval b]
-  LitInt  _ a   -> pure a
-  IntMin  _ a   -> pure $ intmin  a
-  IntMax  _ a   -> pure $ intmax  a
-  UIntMin _ a   -> pure $ uintmin a
-  UIntMax _ a   -> pure $ uintmax a
-  InRange _ _ _ -> error "TODO eval in range"
-
-  Cat _ s t     -> [s' <> t' | s' <- eval s, t' <- eval t]
-  Slice _ s a b -> [BS.pack . genericDrop a' . genericTake b' $ s'
-                            | s' <- BS.unpack <$> eval s
-                            , a' <- eval a
-                            , b' <- eval b]
-  ByStr _ s     -> pure . fromString $ s
-  ByLit _ s     -> pure s
-
-  -- TODO better way to write these?
-  Eq _ SInteger x y -> [ x' == y' | x' <- eval x, y' <- eval y]
-  Eq _ SBoolean x y -> [ x' == y' | x' <- eval x, y' <- eval y]
-  Eq _ SByteStr x y -> [ x' == y' | x' <- eval x, y' <- eval y]
-
-  NEq _ SInteger x y -> [ x' /= y' | x' <- eval x, y' <- eval y]
-  NEq _ SBoolean x y -> [ x' /= y' | x' <- eval x, y' <- eval y]
-  NEq _ SByteStr x y -> [ x' /= y' | x' <- eval x, y' <- eval y]
-
-  ITE _ a b c   -> eval a >>= \cond -> if cond then eval b else eval c
-
-  Create _ _ _ -> error "eval of contracts not supported"
-  _              -> empty
-
-intmin :: Int -> Integer
-intmin a = negate $ 2 ^ (a - 1)
-
-intmax :: Int -> Integer
-intmax a = 2 ^ (a - 1) - 1
-
-uintmin :: Int -> Integer
-uintmin _ = 0
-
-uintmax :: Int -> Integer
-uintmax a = 2 ^ a - 1
 
 _Var :: SingI a => Time t -> AbiType -> Id -> Exp a t
-_Var tm at x = TEntry nowhere tm SCalldata (Item sing (PrimitiveType at) (CVar nowhere at x))
+_Var tm at x = TEntry nowhere SCalldata (Item sing (PrimitiveType at) tm (CVar nowhere at x))
