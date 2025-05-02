@@ -557,7 +557,8 @@ instance ToJSON (Exp a t) where
                               , "type" .= pack "bytestring" ]
   toJSON (ByEnv _ a) = object [ "ethEnv" .= pack (show a)
                               , "type" .= pack "bytestring" ]
-  toJSON (TEntry _ t _ a) = object [ "entry"  .= toJSON a ]
+  toJSON (TEntry _ k a) = object [ "entry" .= toJSON a
+                                , "refkind" .= show k ]
   toJSON (Create _ f xs) = object [ "symbol" .= pack "create"
                                   , "arity"  .= Data.Aeson.Types.Number 2
                                   , "args"   .= Array (fromList [object [ "fun" .=  String (pack f) ], toJSON xs]) ]
