@@ -174,6 +174,14 @@ pattern SRefKind <- Sing
 eqKind :: forall (a :: RefKind) (b :: RefKind) f t t'. (SingI a, SingI b, Eq (f t a t')) => f t a t' -> f t b t' -> Bool
 eqKind fa fb = maybe False (\Refl -> fa == fb) $ testEquality (sing @a) (sing @b)
 
+-- | Compare equality of two TItems with different RefKinds
+eqItemKind :: forall k1 k2 a t. (SingI k1, SingI k2) 
+           => TItem a k1 t -> TItem a k2 t -> Bool
+eqItemKind i1 i2 = 
+  case testEquality (sing @k1) (sing @k2) of
+    Just Refl -> i1 == i2
+    Nothing -> False
+
 -- | Reference to an item in storage or a variable. It can be either a
 -- storage or calldata variable, a map lookup, or a field selector.
 -- annotated with two identifiers: the contract that they belong to
@@ -304,7 +312,7 @@ instance Eq (Exp a t) where
   NEq _ SType a b == NEq _ SType c d = eqS a c && eqS b d
 
   ITE _ a b c == ITE _ d e f = a == d && b == e && c == f
-  TEntry _ SRefKind t == TEntry _ SRefKind u = eqKind t u
+  TEntry _ SRefKind t == TEntry _ SRefKind u = eqItemKind t u
   Create _ a b == Create _ c d = a == c && b == d
 
   _ == _ = False
